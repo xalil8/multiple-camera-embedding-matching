@@ -16,7 +16,7 @@ dist/
 
 # Ignore vscode directory
 .vscode/
-
+datasets/**
 **mp4
 **.pt
 **.pth
@@ -25,3 +25,6 @@ dist/
 
 **.log
 **wav
+**json
+**zip 
+**ipynb

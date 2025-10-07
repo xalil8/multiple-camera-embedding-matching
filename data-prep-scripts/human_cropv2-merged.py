@@ -1,6 +1,4 @@
 #!/usr/bin/env python3
-
-#nohup /bin/python3.10 /home/spactureai/xalil/embedding-matching/data-prep-scripts/human-cropv1.py > /home/spactureai/xalil/embedding-matching/data-prep-scripts/human-cropv1.log 2>&1 &
 import os
 import cv2
 import math
@@ -11,23 +9,24 @@ from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_compl
 
 # ========= CONFIG =========
 MODEL_PATH = "/home/spactureai/xalil/embedding-matching/models/custom_yolo_model.pt"
-INPUT_DIR  = "/home/spactureai/xalil/camera_matching_videos"
-OUTPUT_DIR = "/home/spactureai/xalil/embedding-matching/data-prep-scripts/human_detections"   # save JSON with detections
+INPUT_DIR  = "/home/spactureai/xalil/camera_matching_merged"   # merged videos per camera
+OUTPUT_DIR = "/home/spactureai/xalil/embedding-matching/human_detections"   # save JSONs
+#!/usr/bin/env python3
+
 
 # Detection / tracking
 CONF_TH = 0.5
 IOU_TH  = 0.45
-BATCH_SIZE = 680                # frames per YOLO track() call in a batch
+BATCH_SIZE = 640
 
 # Parallelism
-N_YOLO_WORKERS = 2              # process-level parallel YOLO for different videos
-WRITER_THREADS = 16             # thread-level parallel JSON writing
+N_YOLO_WORKERS = 2
+WRITER_THREADS = 8
 DEVICE = "0"
 # ==========================
 
 
 def ensure_fps_size(video_path):
-    """Get fps and video dimensions safely."""
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video: {video_path}")
@@ -41,7 +40,6 @@ def ensure_fps_size(video_path):
 
 
 def make_out_json_path(video_path):
-    """Build JSON save path inside OUTPUT_DIR, mirroring input structure."""
     rel_path = os.path.relpath(video_path, INPUT_DIR)
     rel_dir = os.path.dirname(rel_path)
     out_subdir = os.path.join(OUTPUT_DIR, rel_dir)
@@ -51,11 +49,10 @@ def make_out_json_path(video_path):
 
 
 def run_batch(batch_frames, model, frame_start_idx, detections, fps):
-    """Run YOLO on batch and collect detections."""
     results = model.track(
         source=batch_frames,
         persist=True,
-        conf=CONF_TH, iou=IOU_TH, classes=[0],  # class=0 = person
+        conf=CONF_TH, iou=IOU_TH, classes=[0],
         half=True, device=DEVICE, imgsz=640, verbose=False
     )
 
@@ -82,7 +79,6 @@ def run_batch(batch_frames, model, frame_start_idx, detections, fps):
 
 
 def save_detections_json(video_path, detections, fps, W, H):
-    """Write detections to JSON file."""
     out_path = make_out_json_path(video_path)
     data = {
         "video": os.path.basename(video_path),
@@ -97,7 +93,11 @@ def save_detections_json(video_path, detections, fps, W, H):
 
 
 def track_and_save(video_path, model, pool):
-    """Run YOLO tracking on one video and submit JSON writing to thread pool."""
+    out_path = make_out_json_path(video_path)
+    if os.path.exists(out_path):
+        print(f"[SKIP] JSON already exists: {out_path}")
+        return
+
     fps, (W, H) = ensure_fps_size(video_path)
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
@@ -123,15 +123,10 @@ def track_and_save(video_path, model, pool):
         run_batch(batch_frames, model, frame_idx - len(batch_frames), detections, fps)
 
     cap.release()
-
-    # async write
     pool.submit(save_detections_json, video_path, detections, fps, W, H)
 
 
-# ========== PROCESS WORKER ==========
-
 def process_one_video(vp):
-    """Worker process: loads YOLO model once, uses threads for saving JSON."""
     try:
         model = YOLO(MODEL_PATH)
     except Exception as e:
@@ -142,13 +137,12 @@ def process_one_video(vp):
     try:
         with ThreadPoolExecutor(max_workers=WRITER_THREADS) as pool:
             track_and_save(vp, model, pool)
-            pool.shutdown(wait=True)   # ensure JSON written
+            pool.shutdown(wait=True)
     except Exception as e:
         print(f"[ERROR] {os.path.basename(vp)}: {e}")
 
 
 def process_folder_parallel(input_dir, output_dir):
-    """Collect videos and process them in parallel processes."""
     video_files = []
     for root, _, files in os.walk(input_dir):
         for f in files:
